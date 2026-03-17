@@ -20,6 +20,14 @@
 #define CP_KEY      10  // shortcut key glyph      (white on cyan)
 #define CP_TITLE    11  // column header row       (cyan   on default)
 #define CP_DIALOG   12  // dialog background       (white  on default)
+#define CP_BAR_OK   13  // progress bar – low usage    (green  on default)
+#define CP_BAR_WARN 14  // progress bar – medium usage (yellow on default)
+#define CP_BAR_CRIT 15  // progress bar – high usage   (red    on default)
+
+// ─── Layout Constants ─────────────────────────────────────────────────────────
+static const int HEADER_H = 1;   // top header bar
+static const int STATS_H  = 5;   // system-stats panel  (border + 3 data rows + border)
+static const int FOOTER_H = 2;   // stats-summary bar + shortcut bar
 
 // ─── Domain Types ────────────────────────────────────────────────────────────
 enum class Priority   { LOW = 0, MEDIUM = 1, HIGH = 2 };
@@ -71,6 +79,83 @@ public:
                 [s](const Task& t){ return t.status == s; }));
     }
 };
+
+// ─── System Monitoring ───────────────────────────────────────────────────────
+struct CpuStat {
+    long user = 0, nice = 0, system = 0, idle = 0;
+    long iowait = 0, irq = 0, softirq = 0, steal = 0;
+};
+
+struct MemInfo {
+    long totalKB = 0, availKB = 0;
+};
+
+static bool readCpuStat(CpuStat& s) {
+    FILE* f = fopen("/proc/stat", "r");
+    if (!f) return false;
+    int n = fscanf(f, "cpu %ld %ld %ld %ld %ld %ld %ld %ld",
+                   &s.user, &s.nice, &s.system, &s.idle,
+                   &s.iowait, &s.irq, &s.softirq, &s.steal);
+    fclose(f);
+    return n == 8;
+}
+
+static int calcCpuPercent(const CpuStat& prev, const CpuStat& cur) {
+    long prevIdle    = prev.idle + prev.iowait;
+    long curIdle     = cur.idle  + cur.iowait;
+    long prevNonIdle = prev.user + prev.nice + prev.system
+                     + prev.irq + prev.softirq + prev.steal;
+    long curNonIdle  = cur.user  + cur.nice  + cur.system
+                     + cur.irq  + cur.softirq  + cur.steal;
+    long totalDelta  = (curIdle + curNonIdle) - (prevIdle + prevNonIdle);
+    long idleDelta   = curIdle - prevIdle;
+    if (totalDelta <= 0) return 0;
+    return static_cast<int>(100 * (totalDelta - idleDelta) / totalDelta);
+}
+
+static bool readMemInfo(MemInfo& m) {
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (!f) return false;
+    char line[256];
+    m.totalKB = m.availKB = 0;
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "MemTotal:", 9) == 0)
+            sscanf(line, "MemTotal: %ld kB", &m.totalKB);
+        else if (strncmp(line, "MemAvailable:", 13) == 0)
+            sscanf(line, "MemAvailable: %ld kB", &m.availKB);
+    }
+    fclose(f);
+    return m.totalKB > 0;
+}
+
+static std::string fmtBytes(long kb) {
+    char buf[32];
+    if (kb >= 1024L * 1024L)
+        snprintf(buf, sizeof(buf), "%.1fG", kb / (1024.0 * 1024.0));
+    else if (kb >= 1024L)
+        snprintf(buf, sizeof(buf), "%.1fM", kb / 1024.0);
+    else
+        snprintf(buf, sizeof(buf), "%ldK", kb);
+    return buf;
+}
+
+static std::string readUptime() {
+    FILE* f = fopen("/proc/uptime", "r");
+    if (!f) return "N/A";
+    double upSec = 0.0;
+    if (fscanf(f, "%lf", &upSec) != 1) upSec = 0.0;
+    fclose(f);
+    long sec  = static_cast<long>(upSec);
+    long days = sec / 86400; sec %= 86400;
+    long hrs  = sec / 3600;  sec %= 3600;
+    long mins = sec / 60;    sec %= 60;
+    char buf[32];
+    if (days > 0)
+        snprintf(buf, sizeof(buf), "%ldd %02ld:%02ld:%02ld", days, hrs, mins, sec);
+    else
+        snprintf(buf, sizeof(buf), "%02ld:%02ld:%02ld", hrs, mins, sec);
+    return buf;
+}
 
 // ─── Formatting Helpers ───────────────────────────────────────────────────────
 static std::string currentTime() {
@@ -134,6 +219,90 @@ static int statusColor(TaskStatus s) {
 //  Total = 47 + nameW  =>  nameW = cols - 47
 static int nameWidth(int cols) {
     return std::max(10, cols - 47);
+}
+
+// ─── Progress Bar ────────────────────────────────────────────────────────────
+// Draws a progress bar of `barW` chars at (y,x) inside window `w`.
+// Uses color-coded fill blocks: green < 60 %, yellow < 85 %, red >= 85 %.
+static void drawProgressBar(WINDOW* w, int y, int x, int barW, int pct) {
+    pct = std::max(0, std::min(100, pct));
+    int cp     = (pct < 60) ? CP_BAR_OK : (pct < 85) ? CP_BAR_WARN : CP_BAR_CRIT;
+    int filled = barW * pct / 100;
+
+    wattron(w, COLOR_PAIR(cp) | A_BOLD);
+    for (int i = 0; i < filled; i++)
+        mvwaddch(w, y, x + i, ACS_BLOCK);
+    wattroff(w, COLOR_PAIR(cp) | A_BOLD);
+
+    wattron(w, COLOR_PAIR(CP_NORMAL));
+    for (int i = filled; i < barW; i++)
+        mvwaddch(w, y, x + i, ACS_CKBOARD);
+    wattroff(w, COLOR_PAIR(CP_NORMAL));
+}
+
+// ─── Stats Panel ──────────────────────────────────────────────────────────────
+// Renders the system-stats WINDOW* (CPU, Memory, Uptime).
+static void drawStatsPanel(WINDOW* win, int cpuPct, const MemInfo& mem) {
+    int wrows, wcols;
+    getmaxyx(win, wrows, wcols);
+    (void)wrows;
+
+    werase(win);
+    wbkgd(win, COLOR_PAIR(CP_NORMAL));
+    box(win, 0, 0);
+
+    // Panel title
+    wattron(win, COLOR_PAIR(CP_HEADER) | A_BOLD);
+    mvwprintw(win, 0, 2, " SYSTEM STATS ");
+    wattroff(win, COLOR_PAIR(CP_HEADER) | A_BOLD);
+
+    const int barW = std::max(10, wcols / 2 - 16);
+
+    // ── CPU row ───────────────────────────────────────────────────────────────
+    wattron(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvwprintw(win, 1, 2, "CPU");
+    wattroff(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+
+    wattron(win, COLOR_PAIR(CP_NORMAL));
+    mvwaddch(win, 1, 6, '[');
+    mvwaddch(win, 1, 7 + barW, ']');
+    wattroff(win, COLOR_PAIR(CP_NORMAL));
+
+    drawProgressBar(win, 1, 7, barW, cpuPct);
+
+    wattron(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvwprintw(win, 1, 9 + barW, "%3d%%", cpuPct);
+    wattroff(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+
+    // ── Memory row ────────────────────────────────────────────────────────────
+    int memPct = (mem.totalKB > 0)
+        ? static_cast<int>(100L * (mem.totalKB - mem.availKB) / mem.totalKB)
+        : 0;
+
+    wattron(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvwprintw(win, 2, 2, "MEM");
+    wattroff(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+
+    wattron(win, COLOR_PAIR(CP_NORMAL));
+    mvwaddch(win, 2, 6, '[');
+    mvwaddch(win, 2, 7 + barW, ']');
+    wattroff(win, COLOR_PAIR(CP_NORMAL));
+
+    drawProgressBar(win, 2, 7, barW, memPct);
+
+    std::string usedStr  = fmtBytes(mem.totalKB - mem.availKB);
+    std::string totalStr = fmtBytes(mem.totalKB);
+    wattron(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvwprintw(win, 2, 9 + barW, "%3d%%  %s / %s",
+              memPct, usedStr.c_str(), totalStr.c_str());
+    wattroff(win, COLOR_PAIR(CP_STATS) | A_BOLD);
+
+    // ── Uptime row ────────────────────────────────────────────────────────────
+    wattron(win, COLOR_PAIR(CP_TITLE) | A_BOLD);
+    mvwprintw(win, 3, 2, "Uptime: %s", readUptime().c_str());
+    wattroff(win, COLOR_PAIR(CP_TITLE) | A_BOLD);
+
+    wrefresh(win);
 }
 
 // ─── Dialog: Add Task ─────────────────────────────────────────────────────────
@@ -243,87 +412,81 @@ static bool dialogConfirmDelete(const std::string& name) {
     return (ch == 'y' || ch == 'Y');
 }
 
-// ─── Main UI Renderer ────────────────────────────────────────────────────────
-static void drawUI(const TaskManager& tm, int sel, int scroll,
-                   const std::string& statusMsg)
+// ─── Task Panel ───────────────────────────────────────────────────────────────
+// Renders the task-list WINDOW*: column headers + scrollable task rows.
+static void drawTaskPanel(WINDOW* win, const TaskManager& tm,
+                          int sel, int scroll)
 {
-    int rows, cols;
-    getmaxyx(stdscr, rows, cols);
+    int wrows, wcols;
+    getmaxyx(win, wrows, wcols);
 
-    if (rows < 8 || cols < 55) {
-        clear();
-        mvprintw(0, 0, "Terminal too small! Minimum: 55 columns x 8 rows.");
-        refresh();
-        return;
-    }
+    werase(win);
+    wbkgd(win, COLOR_PAIR(CP_NORMAL));
 
-    erase();
+    const int nW = nameWidth(wcols);
 
-    const int nW = nameWidth(cols);
-
-    // ── Header bar ────────────────────────────────────────────────────────────
-    attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
-    for (int x = 0; x < cols; x++) mvaddch(0, x, ' ');
-    mvprintw(0, 2, " C++ TASK MANAGER  v1.0");
-    std::string dt = currentTime();
-    if (static_cast<int>(dt.size()) + 4 < cols)
-        mvprintw(0, cols - static_cast<int>(dt.size()) - 2, "%s", dt.c_str());
-    attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
+    // ── Panel title / top border ──────────────────────────────────────────────
+    wattron(win, COLOR_PAIR(CP_HEADER) | A_BOLD);
+    mvwhline(win, 0, 0, ' ', wcols);
+    mvwprintw(win, 0, 2, " TASK MANAGER ");
+    wattroff(win, COLOR_PAIR(CP_HEADER) | A_BOLD);
 
     // ── Column header ─────────────────────────────────────────────────────────
-    attron(COLOR_PAIR(CP_TITLE) | A_BOLD);
-    mvhline(1, 0, ACS_HLINE, cols);
-    mvprintw(1, 0, "  %-4s | %-8s | %-*s | %-10s | %-10s",
-             "ID", "PRIORITY", nW, "TASK NAME", "STATUS", "CREATED");
-    attroff(COLOR_PAIR(CP_TITLE) | A_BOLD);
+    wattron(win, COLOR_PAIR(CP_TITLE) | A_BOLD);
+    mvwhline(win, 1, 0, ACS_HLINE, wcols);
+    mvwprintw(win, 1, 0, "  %-4s | %-8s | %-*s | %-10s | %-10s",
+              "ID", "PRIORITY", nW, "TASK NAME", "STATUS", "CREATED");
+    wattroff(win, COLOR_PAIR(CP_TITLE) | A_BOLD);
 
-    attron(COLOR_PAIR(CP_TITLE));
-    mvhline(2, 0, ACS_HLINE, cols);
-    attroff(COLOR_PAIR(CP_TITLE));
+    wattron(win, COLOR_PAIR(CP_TITLE));
+    mvwhline(win, 2, 0, ACS_HLINE, wcols);
+    wattroff(win, COLOR_PAIR(CP_TITLE));
 
     // ── Task rows ─────────────────────────────────────────────────────────────
-    const int listH  = rows - 6;
+    const int listH  = wrows - 3;   // rows 3..wrows-1
     const int nTasks = static_cast<int>(tm.tasks.size());
 
     for (int i = 0; i < listH; i++) {
-        const int idx = i + scroll;
-        const int y   = 3 + i;
+        const int idx  = i + scroll;
+        const int y    = 3 + i;
+        const bool isSel = (idx == sel);
 
         if (idx >= nTasks) {
-            // blank row
-            attron(COLOR_PAIR(CP_NORMAL));
-            for (int x = 0; x < cols; x++) mvaddch(y, x, ' ');
-            attroff(COLOR_PAIR(CP_NORMAL));
+            wattron(win, COLOR_PAIR(CP_NORMAL));
+            mvwhline(win, y, 0, ' ', wcols);
+            wattroff(win, COLOR_PAIR(CP_NORMAL));
             continue;
         }
 
-        const Task& t   = tm.tasks[idx];
-        const bool isSel = (idx == sel);
+        const Task& t = tm.tasks[idx];
 
         // Row background
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(CP_NORMAL));
-        for (int x = 0; x < cols; x++) mvaddch(y, x, ' ');
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD) : COLOR_PAIR(CP_NORMAL));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(CP_NORMAL));
+        mvwhline(win, y, 0, ' ', wcols);
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(CP_NORMAL));
 
         // Selector + ID
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(CP_NORMAL));
-        mvprintw(y, 0, " %c %-4d|", isSel ? '>' : ' ', t.id);
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD) : COLOR_PAIR(CP_NORMAL));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(CP_NORMAL));
+        mvwprintw(win, y, 0, " %c %-4d|", isSel ? '>' : ' ', t.id);
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(CP_NORMAL));
 
         // Priority
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(priColor(t.priority)) | A_BOLD);
-        mvprintw(y, 8, " %-8s", priStr(t.priority));
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD)
-                      : (COLOR_PAIR(priColor(t.priority)) | A_BOLD));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(priColor(t.priority)) | A_BOLD);
+        mvwprintw(win, y, 8, " %-8s", priStr(t.priority));
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(priColor(t.priority)) | A_BOLD);
 
         // Separator
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(CP_NORMAL));
-        mvprintw(y, 17, "|");
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD) : COLOR_PAIR(CP_NORMAL));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(CP_NORMAL));
+        mvwprintw(win, y, 17, "|");
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(CP_NORMAL));
 
         // Task name (truncated if needed)
         std::string name = t.name;
@@ -331,65 +494,111 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
             name = name.substr(0, nW - 3) + "...";
 
         if (isSel)
-            attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
         else if (t.status == TaskStatus::DONE)
-            attron(COLOR_PAIR(CP_DONE) | A_DIM);
+            wattron(win, COLOR_PAIR(CP_DONE) | A_DIM);
         else
-            attron(COLOR_PAIR(CP_NORMAL));
-        mvprintw(y, 18, " %-*s ", nW, name.c_str());
+            wattron(win, COLOR_PAIR(CP_NORMAL));
+        mvwprintw(win, y, 18, " %-*s ", nW, name.c_str());
         if (isSel)
-            attroff(COLOR_PAIR(CP_SELECTED) | A_BOLD);
+            wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
         else if (t.status == TaskStatus::DONE)
-            attroff(COLOR_PAIR(CP_DONE) | A_DIM);
+            wattroff(win, COLOR_PAIR(CP_DONE) | A_DIM);
         else
-            attroff(COLOR_PAIR(CP_NORMAL));
+            wattroff(win, COLOR_PAIR(CP_NORMAL));
 
         const int sepX = 20 + nW;
 
         // Status
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(CP_NORMAL));
-        mvprintw(y, sepX, "|");
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD) : COLOR_PAIR(CP_NORMAL));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(CP_NORMAL));
+        mvwprintw(win, y, sepX, "|");
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(CP_NORMAL));
 
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(statusColor(t.status)) | A_BOLD);
-        mvprintw(y, sepX + 1, " %-10s", statusStr(t.status));
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD)
-                      : (COLOR_PAIR(statusColor(t.status)) | A_BOLD));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(statusColor(t.status)) | A_BOLD);
+        mvwprintw(win, y, sepX + 1, " %-10s", statusStr(t.status));
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(statusColor(t.status)) | A_BOLD);
 
         // Created date
-        if (isSel) attron(COLOR_PAIR(CP_SELECTED) | A_BOLD);
-        else        attron(COLOR_PAIR(CP_NORMAL));
-        mvprintw(y, sepX + 12, "| %-10s", t.created.c_str());
-        attroff(isSel ? (COLOR_PAIR(CP_SELECTED) | A_BOLD) : COLOR_PAIR(CP_NORMAL));
+        if (isSel) wattron(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattron(win, COLOR_PAIR(CP_NORMAL));
+        mvwprintw(win, y, sepX + 12, "| %-10s", t.created.c_str());
+        if (isSel) wattroff(win, COLOR_PAIR(CP_SELECTED) | A_BOLD);
+        else        wattroff(win, COLOR_PAIR(CP_NORMAL));
     }
 
     // Empty-state message
     if (tm.tasks.empty()) {
-        attron(COLOR_PAIR(CP_MEDIUM) | A_BOLD);
+        wattron(win, COLOR_PAIR(CP_MEDIUM) | A_BOLD);
         const int midY = 3 + listH / 2;
         const char* em1 = "No tasks yet!";
         const char* em2 = "Press  [a]  to add your first task";
-        mvprintw(midY - 1, (cols - static_cast<int>(strlen(em1))) / 2, "%s", em1);
-        mvprintw(midY,     (cols - static_cast<int>(strlen(em2))) / 2, "%s", em2);
-        attroff(COLOR_PAIR(CP_MEDIUM) | A_BOLD);
+        mvwprintw(win, midY - 1,
+                  (wcols - static_cast<int>(strlen(em1))) / 2, "%s", em1);
+        mvwprintw(win, midY,
+                  (wcols - static_cast<int>(strlen(em2))) / 2, "%s", em2);
+        wattroff(win, COLOR_PAIR(CP_MEDIUM) | A_BOLD);
     }
+
+    wrefresh(win);
+}
+
+// ─── Main UI Renderer ────────────────────────────────────────────────────────
+// Draws the header and footer on stdscr, then refreshes the two sub-panels.
+static void drawUI(WINDOW* statsWin, WINDOW* taskWin,
+                   const TaskManager& tm, int sel, int scroll,
+                   int cpuPct, const MemInfo& mem,
+                   const std::string& statusMsg)
+{
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    const int minRows = HEADER_H + STATS_H + 4 + FOOTER_H;  // need ≥4 task rows
+    if (rows < minRows || cols < 60) {
+        clear();
+        mvprintw(0, 0, "Terminal too small! Minimum: 60 columns x %d rows.", minRows);
+        refresh();
+        return;
+    }
+
+    erase();
+
+    const int nTasks = static_cast<int>(tm.tasks.size());
+
+    // ── Header bar ────────────────────────────────────────────────────────────
+    attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
+    for (int x = 0; x < cols; x++) mvaddch(0, x, ' ');
+    mvprintw(0, 2, " C++ SYSTEM DASHBOARD  v2.0");
+    std::string dt = currentTime();
+    if (static_cast<int>(dt.size()) + 4 < cols)
+        mvprintw(0, cols - static_cast<int>(dt.size()) - 2, "%s", dt.c_str());
+    attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
+
+    refresh();   // flush header before sub-windows paint over it
+
+    // ── System-stats panel ────────────────────────────────────────────────────
+    drawStatsPanel(statsWin, cpuPct, mem);
+
+    // ── Task panel ────────────────────────────────────────────────────────────
+    drawTaskPanel(taskWin, tm, sel, scroll);
 
     // ── Separator ─────────────────────────────────────────────────────────────
     attron(COLOR_PAIR(CP_TITLE));
-    mvhline(rows - 3, 0, ACS_HLINE, cols);
+    mvhline(rows - FOOTER_H - 1, 0, ACS_HLINE, cols);
     attroff(COLOR_PAIR(CP_TITLE));
 
-    // ── Stats bar ─────────────────────────────────────────────────────────────
+    // ── Summary stats bar ─────────────────────────────────────────────────────
     attron(COLOR_PAIR(CP_NORMAL));
     for (int x = 0; x < cols; x++) mvaddch(rows - 2, x, ' ');
     attroff(COLOR_PAIR(CP_NORMAL));
 
-    attron(COLOR_PAIR(CP_STATS)  | A_BOLD); mvprintw(rows - 2,  1, "TASKS: %-3d",  nTasks);                           attroff(COLOR_PAIR(CP_STATS)  | A_BOLD);
-    attron(COLOR_PAIR(CP_NORMAL) | A_BOLD); mvprintw(rows - 2, 13, "Pending: %-3d", tm.count(TaskStatus::PENDING));   attroff(COLOR_PAIR(CP_NORMAL) | A_BOLD);
-    attron(COLOR_PAIR(CP_INPROG) | A_BOLD); mvprintw(rows - 2, 27, "In Progress: %-3d", tm.count(TaskStatus::IN_PROGRESS)); attroff(COLOR_PAIR(CP_INPROG) | A_BOLD);
-    attron(COLOR_PAIR(CP_DONE)   | A_BOLD); mvprintw(rows - 2, 47, "Done: %-3d", tm.count(TaskStatus::DONE));         attroff(COLOR_PAIR(CP_DONE)   | A_BOLD);
+    attron(COLOR_PAIR(CP_STATS)  | A_BOLD); mvprintw(rows - 2,  1, "TASKS: %-3d",  nTasks);                                attroff(COLOR_PAIR(CP_STATS)  | A_BOLD);
+    attron(COLOR_PAIR(CP_NORMAL) | A_BOLD); mvprintw(rows - 2, 13, "Pending: %-3d", tm.count(TaskStatus::PENDING));        attroff(COLOR_PAIR(CP_NORMAL) | A_BOLD);
+    attron(COLOR_PAIR(CP_INPROG) | A_BOLD); mvprintw(rows - 2, 27, "In Progress: %-3d", tm.count(TaskStatus::IN_PROGRESS));attroff(COLOR_PAIR(CP_INPROG) | A_BOLD);
+    attron(COLOR_PAIR(CP_DONE)   | A_BOLD); mvprintw(rows - 2, 47, "Done: %-3d", tm.count(TaskStatus::DONE));              attroff(COLOR_PAIR(CP_DONE)   | A_BOLD);
 
     if (!statusMsg.empty()) {
         attron(COLOR_PAIR(CP_LOW) | A_BOLD);
@@ -429,6 +638,15 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
     refresh();
 }
 
+// ─── Window helpers ───────────────────────────────────────────────────────────
+static WINDOW* makeStatsWin(int cols) {
+    return newwin(STATS_H, cols, HEADER_H, 0);
+}
+static WINDOW* makeTaskWin(int rows, int cols) {
+    int h = rows - HEADER_H - STATS_H - FOOTER_H;
+    return newwin(std::max(4, h), cols, HEADER_H + STATS_H, 0);
+}
+
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 int main() {
     setlocale(LC_ALL, "");
@@ -459,39 +677,56 @@ int main() {
     init_pair(CP_KEY,      COLOR_WHITE,   COLOR_CYAN);
     init_pair(CP_TITLE,    COLOR_CYAN,    -1);
     init_pair(CP_DIALOG,   COLOR_WHITE,   -1);
+    init_pair(CP_BAR_OK,   COLOR_GREEN,   -1);
+    init_pair(CP_BAR_WARN, COLOR_YELLOW,  -1);
+    init_pair(CP_BAR_CRIT, COLOR_RED,     -1);
+
+    // Create sub-windows (panels)
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+    WINDOW* statsWin = makeStatsWin(cols);
+    WINDOW* taskWin  = makeTaskWin(rows, cols);
 
     // Pre-populate with sample tasks
     TaskManager tm;
-    tm.add("Design the TUI dashboard layout",   Priority::HIGH);
-    tm.add("Implement ncurses color scheme",     Priority::HIGH);
+    tm.add("Monitor CPU & memory in real-time", Priority::HIGH);
+    tm.add("Implement ncurses multi-window layout", Priority::HIGH);
     tm.add("Add task creation dialog",           Priority::MEDIUM);
     tm.add("Write unit tests for TaskManager",   Priority::MEDIUM);
     tm.add("Update project documentation",       Priority::LOW);
     tm.tasks[1].status = TaskStatus::DONE;
     tm.tasks[2].status = TaskStatus::IN_PROGRESS;
 
-    int sel   = 0;
-    int scroll = 0;
+    int sel        = 0;
+    int scroll     = 0;
     std::string statusMsg;
     int statusTick = 0;
     const int STATUS_DURATION = 20;
 
-    halfdelay(5);   // 0.5 s refresh for real-time clock
+    // System-monitoring state
+    CpuStat prevCpu{}, curCpu{};
+    MemInfo mem{};
+    int cpuPct = 0;
+    readCpuStat(prevCpu);
+    readMemInfo(mem);
+
+    halfdelay(5);   // 0.5 s refresh for real-time clock and system stats
 
     while (true) {
-        int rows, cols;
         getmaxyx(stdscr, rows, cols);
 
-        const int listH  = std::max(1, rows - 6);
-        const int nTasks = static_cast<int>(tm.tasks.size());
+        // Recompute task-panel visible height
+        const int taskWinH = rows - HEADER_H - STATS_H - FOOTER_H;
+        const int listH    = std::max(1, taskWinH - 3);  // subtract header rows inside panel
+        const int nTasks   = static_cast<int>(tm.tasks.size());
 
         // Clamp selection
         if (nTasks > 0) sel = std::max(0, std::min(sel, nTasks - 1));
         else            sel = 0;
 
         // Scroll to keep selection visible
-        if (sel < scroll)              scroll = sel;
-        if (sel >= scroll + listH)     scroll = sel - listH + 1;
+        if (sel < scroll)          scroll = sel;
+        if (sel >= scroll + listH) scroll = sel - listH + 1;
 
         // Clear status message after timeout
         if (!statusMsg.empty() && ++statusTick >= STATUS_DURATION) {
@@ -499,13 +734,22 @@ int main() {
             statusTick = 0;
         }
 
-        drawUI(tm, sel, scroll, statusMsg);
+        // Refresh system stats on every frame (cheap reads)
+        if (readCpuStat(curCpu)) {
+            cpuPct  = calcCpuPercent(prevCpu, curCpu);
+            prevCpu = curCpu;
+        }
+        readMemInfo(mem);
+
+        drawUI(statsWin, taskWin, tm, sel, scroll, cpuPct, mem, statusMsg);
 
         int ch = getch();
         if (ch == ERR) continue;   // halfdelay timeout → just redraw
 
         switch (ch) {
             case 'q': case 'Q':
+                delwin(taskWin);
+                delwin(statsWin);
                 endwin();
                 return 0;
 
@@ -578,6 +822,11 @@ int main() {
                 break;
 
             case KEY_RESIZE:
+                getmaxyx(stdscr, rows, cols);
+                delwin(taskWin);
+                delwin(statsWin);
+                statsWin = makeStatsWin(cols);
+                taskWin  = makeTaskWin(rows, cols);
                 clear();
                 break;
 
@@ -586,6 +835,8 @@ int main() {
         }
     }
 
+    delwin(taskWin);
+    delwin(statsWin);
     endwin();
     return 0;
 }

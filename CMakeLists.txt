@@ -7,9 +7,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Curses REQUIRED)
 
-add_executable(task-manager src/main.cpp)
+add_executable(cpp-system-dashboard src/main.cpp)
 
-target_include_directories(task-manager PRIVATE ${CURSES_INCLUDE_DIR})
-target_link_libraries(task-manager PRIVATE ${CURSES_LIBRARIES})
+target_include_directories(cpp-system-dashboard PRIVATE ${CURSES_INCLUDE_DIR})
+target_link_libraries(cpp-system-dashboard PRIVATE ${CURSES_LIBRARIES})
 
-target_compile_options(task-manager PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(cpp-system-dashboard PRIVATE -Wall -Wextra -Wpedantic)
