@@ -689,7 +689,7 @@ int main() {
 
     // Pre-populate with sample tasks
     TaskManager tm;
-    tm.add("Monitor CPU & memory in real time",  Priority::HIGH);
+    tm.add("Monitor CPU & memory in real-time", Priority::HIGH);
     tm.add("Implement ncurses multi-window layout", Priority::HIGH);
     tm.add("Add task creation dialog",           Priority::MEDIUM);
     tm.add("Write unit tests for TaskManager",   Priority::MEDIUM);
