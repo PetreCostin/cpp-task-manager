@@ -1,7 +1,8 @@
+#include "task_manager.hpp"
+
 #include <ncurses.h>
 #include <clocale>
 #include <string>
-#include <vector>
 #include <ctime>
 #include <algorithm>
 #include <cstring>
@@ -20,57 +21,6 @@
 #define CP_KEY      10  // shortcut key glyph      (white on cyan)
 #define CP_TITLE    11  // column header row       (cyan   on default)
 #define CP_DIALOG   12  // dialog background       (white  on default)
-
-// ─── Domain Types ────────────────────────────────────────────────────────────
-enum class Priority   { LOW = 0, MEDIUM = 1, HIGH = 2 };
-enum class TaskStatus { PENDING = 0, IN_PROGRESS = 1, DONE = 2 };
-
-struct Task {
-    int         id;
-    std::string name;
-    Priority    priority;
-    TaskStatus  status;
-    std::string created;   // "MM/DD/YYYY"
-};
-
-// ─── TaskManager ─────────────────────────────────────────────────────────────
-class TaskManager {
-    int nextId = 1;
-public:
-    std::vector<Task> tasks;
-
-    void add(const std::string& name, Priority p) {
-        time_t now = time(nullptr);
-        struct tm ltm {};
-        localtime_r(&now, &ltm);
-        char buf[11];
-        strftime(buf, sizeof(buf), "%m/%d/%Y", &ltm);
-        tasks.push_back({nextId++, name, p, TaskStatus::PENDING, buf});
-    }
-
-    void remove(size_t idx) {
-        if (idx < tasks.size())
-            tasks.erase(tasks.begin() + idx);
-    }
-
-    void cycleStatus(size_t idx) {
-        if (idx >= tasks.size()) return;
-        auto& s = tasks[idx].status;
-        s = static_cast<TaskStatus>((static_cast<int>(s) + 1) % 3);
-    }
-
-    void cyclePriority(size_t idx) {
-        if (idx >= tasks.size()) return;
-        auto& p = tasks[idx].priority;
-        p = static_cast<Priority>((static_cast<int>(p) + 1) % 3);
-    }
-
-    int count(TaskStatus s) const {
-        return static_cast<int>(
-            std::count_if(tasks.begin(), tasks.end(),
-                [s](const Task& t){ return t.status == s; }));
-    }
-};
 
 // ─── Formatting Helpers ───────────────────────────────────────────────────────
 static std::string currentTime() {
@@ -282,8 +232,9 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
     attroff(COLOR_PAIR(CP_TITLE));
 
     // ── Task rows ─────────────────────────────────────────────────────────────
+    const auto& taskList = tm.getTasks();
     const int listH  = rows - 6;
-    const int nTasks = static_cast<int>(tm.tasks.size());
+    const int nTasks = static_cast<int>(taskList.size());
 
     for (int i = 0; i < listH; i++) {
         const int idx = i + scroll;
@@ -297,7 +248,7 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
             continue;
         }
 
-        const Task& t   = tm.tasks[idx];
+        const Task& t   = taskList[idx];
         const bool isSel = (idx == sel);
 
         // Row background
@@ -366,7 +317,7 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
     }
 
     // Empty-state message
-    if (tm.tasks.empty()) {
+    if (taskList.empty()) {
         attron(COLOR_PAIR(CP_MEDIUM) | A_BOLD);
         const int midY = 3 + listH / 2;
         const char* em1 = "No tasks yet!";
@@ -462,13 +413,13 @@ int main() {
 
     // Pre-populate with sample tasks
     TaskManager tm;
-    tm.add("Design the TUI dashboard layout",   Priority::HIGH);
-    tm.add("Implement ncurses color scheme",     Priority::HIGH);
-    tm.add("Add task creation dialog",           Priority::MEDIUM);
-    tm.add("Write unit tests for TaskManager",   Priority::MEDIUM);
-    tm.add("Update project documentation",       Priority::LOW);
-    tm.tasks[1].status = TaskStatus::DONE;
-    tm.tasks[2].status = TaskStatus::IN_PROGRESS;
+    tm.addTask("Design the TUI dashboard layout",   Priority::HIGH);
+    tm.addTask("Implement ncurses color scheme",     Priority::HIGH);
+    tm.addTask("Add task creation dialog",           Priority::MEDIUM);
+    tm.addTask("Write unit tests for TaskManager",   Priority::MEDIUM);
+    tm.addTask("Update project documentation",       Priority::LOW);
+    tm.setStatus(1, TaskStatus::DONE);
+    tm.setStatus(2, TaskStatus::IN_PROGRESS);
 
     int sel   = 0;
     int scroll = 0;
@@ -483,7 +434,7 @@ int main() {
         getmaxyx(stdscr, rows, cols);
 
         const int listH  = std::max(1, rows - 6);
-        const int nTasks = static_cast<int>(tm.tasks.size());
+        const int nTasks = static_cast<int>(tm.getTasks().size());
 
         // Clamp selection
         if (nTasks > 0) sel = std::max(0, std::min(sel, nTasks - 1));
@@ -538,7 +489,7 @@ int main() {
                 std::string name;
                 Priority prio = Priority::MEDIUM;
                 if (dialogAdd(name, prio)) {
-                    tm.add(name, prio);
+                    tm.addTask(name, prio);
                     sel = nTasks;   // point at new last task
                     statusMsg  = "[+] Task added successfully";
                     statusTick = 0;
@@ -550,9 +501,9 @@ int main() {
             case 'd': case 'D':
                 if (nTasks > 0) {
                     cbreak();
-                    if (dialogConfirmDelete(tm.tasks[sel].name)) {
-                        tm.remove(sel);
-                        const int newN = static_cast<int>(tm.tasks.size());
+                    if (dialogConfirmDelete(tm.getTasks()[sel].name)) {
+                        tm.removeTask(sel);
+                        const int newN = static_cast<int>(tm.getTasks().size());
                         if (sel >= newN && sel > 0) sel--;
                         statusMsg  = "[-] Task deleted";
                         statusTick = 0;
