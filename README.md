@@ -42,6 +42,18 @@ sudo apt install libncurses5-dev libncursesw5-dev
 brew install ncurses
 ```
 
+### Install libcurl
+
+**Ubuntu / Debian:**
+```bash
+sudo apt install libcurl4-openssl-dev
+```
+
+**macOS (Homebrew):**
+```bash
+brew install curl
+```
+
 ## Build
 
 Requires **CMake >= 3.16** and a **C++17** compiler.
