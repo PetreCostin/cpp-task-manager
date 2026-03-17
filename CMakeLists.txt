@@ -9,7 +9,7 @@ find_package(Curses REQUIRED)
 
 add_executable(task-manager src/main.cpp)
 
-target_include_directories(task-manager PRIVATE ${CURSES_INCLUDE_DIR})
+target_include_directories(task-manager PRIVATE ${CURSES_INCLUDE_DIR} src)
 target_link_libraries(task-manager PRIVATE ${CURSES_LIBRARIES})
 
 target_compile_options(task-manager PRIVATE -Wall -Wextra -Wpedantic)

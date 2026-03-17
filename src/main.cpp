@@ -7,6 +7,8 @@
 #include <cstring>
 #include <cstdio>
 
+#include "plugins/cpu_plugin.hpp"
+
 // ─── Color Pair IDs ──────────────────────────────────────────────────────────
 #define CP_HEADER   1   // header / shortcut bars  (black on cyan)
 #define CP_SELECTED 2   // selected row            (black on white)
@@ -245,7 +247,7 @@ static bool dialogConfirmDelete(const std::string& name) {
 
 // ─── Main UI Renderer ────────────────────────────────────────────────────────
 static void drawUI(const TaskManager& tm, int sel, int scroll,
-                   const std::string& statusMsg)
+                   const std::string& statusMsg, const std::string& cpuInfo)
 {
     int rows, cols;
     getmaxyx(stdscr, rows, cols);
@@ -390,6 +392,11 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
     attron(COLOR_PAIR(CP_NORMAL) | A_BOLD); mvprintw(rows - 2, 13, "Pending: %-3d", tm.count(TaskStatus::PENDING));   attroff(COLOR_PAIR(CP_NORMAL) | A_BOLD);
     attron(COLOR_PAIR(CP_INPROG) | A_BOLD); mvprintw(rows - 2, 27, "In Progress: %-3d", tm.count(TaskStatus::IN_PROGRESS)); attroff(COLOR_PAIR(CP_INPROG) | A_BOLD);
     attron(COLOR_PAIR(CP_DONE)   | A_BOLD); mvprintw(rows - 2, 47, "Done: %-3d", tm.count(TaskStatus::DONE));         attroff(COLOR_PAIR(CP_DONE)   | A_BOLD);
+    if (!cpuInfo.empty()) {
+        attron(COLOR_PAIR(CP_STATS) | A_BOLD);
+        mvprintw(rows - 2, 60, "%s", cpuInfo.c_str());
+        attroff(COLOR_PAIR(CP_STATS) | A_BOLD);
+    }
 
     if (!statusMsg.empty()) {
         attron(COLOR_PAIR(CP_LOW) | A_BOLD);
@@ -470,6 +477,9 @@ int main() {
     tm.tasks[1].status = TaskStatus::DONE;
     tm.tasks[2].status = TaskStatus::IN_PROGRESS;
 
+    CPUPlugin cpuPlugin;
+    std::string cpuInfo;
+
     int sel   = 0;
     int scroll = 0;
     std::string statusMsg;
@@ -499,7 +509,13 @@ int main() {
             statusTick = 0;
         }
 
-        drawUI(tm, sel, scroll, statusMsg);
+        // Refresh CPU info approximately once per second (every 2nd half-second tick)
+        static int cpuTick = 0;
+        if (++cpuTick >= 2) {
+            cpuInfo = cpuPlugin.execute();
+            cpuTick = 0;
+        }
+        drawUI(tm, sel, scroll, statusMsg, cpuInfo);
 
         int ch = getch();
         if (ch == ERR) continue;   // halfdelay timeout → just redraw
