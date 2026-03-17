@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <fstream>
+#include <sstream>
 
 // ─── Color Pair IDs ──────────────────────────────────────────────────────────
 #define CP_HEADER   1   // header / shortcut bars  (black on cyan)
@@ -69,6 +71,83 @@ public:
         return static_cast<int>(
             std::count_if(tasks.begin(), tasks.end(),
                 [s](const Task& t){ return t.status == s; }));
+    }
+};
+
+// ─── System Monitor ───────────────────────────────────────────────────────────
+struct CpuStats {
+    long long user = 0, nice = 0, sys = 0, idle = 0,
+              iowait = 0, irq = 0, softirq = 0, steal = 0;
+    long long total() const {
+        return user + nice + sys + idle + iowait + irq + softirq + steal;
+    }
+    long long busy() const { return total() - idle - iowait; }
+};
+
+struct MemInfo {
+    long long total     = 0;   // kB
+    long long available = 0;   // kB
+    long long used()        const { return total - available; }
+    int       usedPercent() const {
+        return (total > 0) ? static_cast<int>(used() * 100 / total) : 0;
+    }
+};
+
+class SystemMonitor {
+    CpuStats prev{};
+    bool     hasPrev = false;
+
+    static bool readCpuStats(CpuStats& s) {
+        std::ifstream f("/proc/stat");
+        if (!f) return false;
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.find("cpu ") == 0) {
+                std::istringstream ss(line.substr(4));
+                ss >> s.user >> s.nice >> s.sys >> s.idle
+                   >> s.iowait >> s.irq >> s.softirq >> s.steal;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool readMemInfo(MemInfo& m) {
+        std::ifstream f("/proc/meminfo");
+        if (!f) return false;
+        m = {};
+        std::string line;
+        while (std::getline(f, line)) {
+            std::istringstream ss(line);
+            std::string key;
+            long long   val = 0;
+            ss >> key >> val;
+            if      (key == "MemTotal:")     m.total     = val;
+            else if (key == "MemAvailable:") m.available = val;
+            if (m.total > 0 && m.available > 0) break;
+        }
+        return m.total > 0;
+    }
+
+public:
+    float   cpuUsage = 0.0f;
+    MemInfo mem{};
+
+    void update() {
+        CpuStats cur;
+        if (readCpuStats(cur)) {
+            if (hasPrev) {
+                long long dtotal = cur.total() - prev.total();
+                long long dbusy  = cur.busy()  - prev.busy();
+                cpuUsage = (dtotal > 0)
+                    ? 100.0f * static_cast<float>(dbusy) / static_cast<float>(dtotal)
+                    : 0.0f;
+                cpuUsage = std::max(0.0f, std::min(100.0f, cpuUsage));
+            }
+            prev    = cur;
+            hasPrev = true;
+        }
+        readMemInfo(mem);
     }
 };
 
@@ -243,6 +322,114 @@ static bool dialogConfirmDelete(const std::string& name) {
     return (ch == 'y' || ch == 'Y');
 }
 
+// ─── System Dashboard ─────────────────────────────────────────────────────────
+static void drawProgressBar(int y, int x, int width, int percent, int colorPair) {
+    int filled = percent * width / 100;
+    attron(COLOR_PAIR(colorPair) | A_BOLD);
+    for (int i = 0; i < width; i++)
+        mvaddch(y, x + i, (i < filled) ? ACS_BLOCK : ACS_HLINE);
+    attroff(COLOR_PAIR(colorPair) | A_BOLD);
+}
+
+static void drawSystemDashboard(const SystemMonitor& sysmon) {
+    int rows, cols;
+    getmaxyx(stdscr, rows, cols);
+
+    if (rows < 8 || cols < 55) {
+        clear();
+        mvprintw(0, 0, "Terminal too small! Minimum: 55 columns x 8 rows.");
+        refresh();
+        return;
+    }
+
+    erase();
+
+    // ── Header bar ────────────────────────────────────────────────────────────
+    attron(COLOR_PAIR(CP_HEADER) | A_BOLD);
+    for (int x = 0; x < cols; x++) mvaddch(0, x, ' ');
+    mvprintw(0, 2, " C++ TASK MANAGER  v1.0  ─  System Dashboard");
+    std::string dt = currentTime();
+    if (static_cast<int>(dt.size()) + 4 < cols)
+        mvprintw(0, cols - static_cast<int>(dt.size()) - 2, "%s", dt.c_str());
+    attroff(COLOR_PAIR(CP_HEADER) | A_BOLD);
+
+    // ── Section header ────────────────────────────────────────────────────────
+    attron(COLOR_PAIR(CP_TITLE) | A_BOLD);
+    mvhline(1, 0, ACS_HLINE, cols);
+    mvprintw(1, 2, " SYSTEM MONITOR ");
+    attroff(COLOR_PAIR(CP_TITLE) | A_BOLD);
+    attron(COLOR_PAIR(CP_TITLE));
+    mvhline(2, 0, ACS_HLINE, cols);
+    attroff(COLOR_PAIR(CP_TITLE));
+
+    const int barW   = std::min(50, cols - 22);
+    const int labelX = std::max(2, (cols - barW - 18) / 2);
+    const int barX   = labelX + 18;
+
+    // ── CPU ───────────────────────────────────────────────────────────────────
+    int cpuPct   = static_cast<int>(sysmon.cpuUsage);
+    int cpuColor = (cpuPct > 80) ? CP_HIGH : (cpuPct > 50) ? CP_MEDIUM : CP_LOW;
+
+    attron(COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvprintw(4, labelX, "CPU Usage:  %3d%%  ", cpuPct);
+    attroff(COLOR_PAIR(CP_STATS) | A_BOLD);
+    drawProgressBar(4, barX, barW, cpuPct, cpuColor);
+
+    // ── RAM ───────────────────────────────────────────────────────────────────
+    int memPct   = sysmon.mem.usedPercent();
+    int memColor = (memPct > 80) ? CP_HIGH : (memPct > 50) ? CP_MEDIUM : CP_LOW;
+
+    long long usedMB  = sysmon.mem.used()  / 1024;
+    long long totalMB = sysmon.mem.total   / 1024;
+
+    attron(COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvprintw(7, labelX, "RAM Usage:  %3d%%  ", memPct);
+    attroff(COLOR_PAIR(CP_STATS) | A_BOLD);
+    drawProgressBar(7, barX, barW, memPct, memColor);
+
+    attron(COLOR_PAIR(CP_NORMAL));
+    mvprintw(8, barX, "%lld MB used / %lld MB total",
+             usedMB, totalMB);
+    attroff(COLOR_PAIR(CP_NORMAL));
+
+    // ── Bottom separator ──────────────────────────────────────────────────────
+    attron(COLOR_PAIR(CP_TITLE));
+    mvhline(rows - 3, 0, ACS_HLINE, cols);
+    attroff(COLOR_PAIR(CP_TITLE));
+
+    // ── Stats placeholder ─────────────────────────────────────────────────────
+    attron(COLOR_PAIR(CP_NORMAL));
+    for (int x = 0; x < cols; x++) mvaddch(rows - 2, x, ' ');
+    attroff(COLOR_PAIR(CP_NORMAL));
+    attron(COLOR_PAIR(CP_STATS) | A_BOLD);
+    mvprintw(rows - 2, 1, "Live metrics refreshed every 0.5 s");
+    attroff(COLOR_PAIR(CP_STATS) | A_BOLD);
+
+    // ── Shortcut bar ──────────────────────────────────────────────────────────
+    attron(COLOR_PAIR(CP_HEADER));
+    for (int x = 0; x < cols; x++) mvaddch(rows - 1, x, ' ');
+    attroff(COLOR_PAIR(CP_HEADER));
+
+    struct { const char* key; const char* desc; } sc[] = {
+        {"[s]", "Tasks  "},
+        {"[q]", "Quit"}
+    };
+    int sx = 1;
+    for (auto& s : sc) {
+        if (sx >= cols - 12) break;
+        attron(COLOR_PAIR(CP_KEY) | A_BOLD);
+        mvprintw(rows - 1, sx, "%s", s.key);
+        sx += static_cast<int>(strlen(s.key));
+        attroff(COLOR_PAIR(CP_KEY) | A_BOLD);
+        attron(COLOR_PAIR(CP_HEADER));
+        mvprintw(rows - 1, sx, "%s", s.desc);
+        sx += static_cast<int>(strlen(s.desc));
+        attroff(COLOR_PAIR(CP_HEADER));
+    }
+
+    refresh();
+}
+
 // ─── Main UI Renderer ────────────────────────────────────────────────────────
 static void drawUI(const TaskManager& tm, int sel, int scroll,
                    const std::string& statusMsg)
@@ -409,6 +596,7 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
         {"[Enter]", "Toggle Status "},
         {"[p]", "Priority "},
         {"[j/k]", "Navigate "},
+        {"[s]", "System "},
         {"[q]", "Quit"}
     };
 
@@ -470,8 +658,11 @@ int main() {
     tm.tasks[1].status = TaskStatus::DONE;
     tm.tasks[2].status = TaskStatus::IN_PROGRESS;
 
-    int sel   = 0;
+    SystemMonitor sysmon;
+
+    int sel    = 0;
     int scroll = 0;
+    bool systemView = false;
     std::string statusMsg;
     int statusTick = 0;
     const int STATUS_DURATION = 20;
@@ -481,6 +672,8 @@ int main() {
     while (true) {
         int rows, cols;
         getmaxyx(stdscr, rows, cols);
+
+        sysmon.update();
 
         const int listH  = std::max(1, rows - 6);
         const int nTasks = static_cast<int>(tm.tasks.size());
@@ -499,7 +692,10 @@ int main() {
             statusTick = 0;
         }
 
-        drawUI(tm, sel, scroll, statusMsg);
+        if (systemView)
+            drawSystemDashboard(sysmon);
+        else
+            drawUI(tm, sel, scroll, statusMsg);
 
         int ch = getch();
         if (ch == ERR) continue;   // halfdelay timeout → just redraw
@@ -575,6 +771,11 @@ int main() {
                     statusMsg  = "[~] Priority changed";
                     statusTick = 0;
                 }
+                break;
+
+            case 's': case 'S':
+                systemView = !systemView;
+                clear();
                 break;
 
             case KEY_RESIZE:
