@@ -1,0 +1,12 @@
+{
+  "name": "cpp-task-manager-server",
+  "version": "1.0.0",
+  "description": "Metrics API server for cpp-task-manager",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

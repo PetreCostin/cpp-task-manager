@@ -59,3 +59,41 @@ make
 ```
 
 > Minimum terminal size: **55 columns x 8 rows**
+
+---
+
+## Metrics API Server
+
+A lightweight Node.js/Express server that receives and serves system metrics over HTTP.
+
+### Setup
+
+Requires **Node.js** (v14+).
+
+```bash
+cd server
+npm install
+npm start
+```
+
+The server listens on **port 3000** by default (override with `PORT` env var).
+
+### Endpoints
+
+| Method | Path       | Description                              |
+|--------|------------|------------------------------------------|
+| `POST` | `/metrics` | Submit metrics as a JSON body            |
+| `GET`  | `/metrics` | Retrieve the most recently posted metrics |
+
+### Example
+
+```bash
+# Post metrics
+curl -X POST http://localhost:3000/metrics \
+  -H "Content-Type: application/json" \
+  -d '{"cpu": 42, "memory": 67}'
+
+# Get latest metrics
+curl http://localhost:3000/metrics
+# {"cpu":42,"memory":67}
+```
