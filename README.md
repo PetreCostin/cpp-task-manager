@@ -1,6 +1,22 @@
-# C++ Task Manager (TUI)
+# C++ System Dashboard Pro (TUI)
 
-A professional terminal-based task manager built with C++ and ncurses.
+A professional terminal-based system dashboard and task manager built with C++ and ncurses.
+
+## Project Structure
+
+```
+cpp-system-dashboard-pro/
+├── README.md
+├── CMakeLists.txt
+└── src/
+    ├── main.cpp
+    ├── system_monitor.cpp
+    ├── system_monitor.hpp
+    ├── task_manager.cpp
+    ├── task_manager.hpp
+    ├── ui.cpp
+    └── ui.hpp
+```
 
 ## Features
 
@@ -55,7 +71,7 @@ make
 ## Run
 
 ```bash
-./build/task-manager
+./build/cpp-system-dashboard-pro
 ```
 
 > Minimum terminal size: **55 columns x 8 rows**
