@@ -1,4 +1,5 @@
 #include <ncurses.h>
+#include <curl/curl.h>
 #include <clocale>
 #include <string>
 #include <vector>
@@ -71,6 +72,98 @@ public:
                 [s](const Task& t){ return t.status == s; }));
     }
 };
+
+// ─── HTTP Utility (libcurl) ───────────────────────────────────────────────────
+// Base URL of the REST API to sync tasks with (configurable via env variable
+// TASK_API_URL; defaults to http://localhost:3001).
+static const char* apiBaseUrl() {
+    const char* env = getenv("TASK_API_URL");
+    return env ? env : "http://localhost:3001";
+}
+
+// Discard response body — used as CURLOPT_WRITEFUNCTION to suppress output.
+static size_t curlDiscardWrite(void* /*buf*/, size_t size, size_t nmemb,
+                                void* /*userp*/) {
+    return size * nmemb;
+}
+
+// Escape a string for safe inclusion in a JSON value (backslash-escape
+// backslashes, double-quotes, and common control characters).
+static std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20) {
+                    char esc[7];
+                    snprintf(esc, sizeof(esc), "\\u%04x", c);
+                    out += esc;
+                } else {
+                    out += static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+// Persistent CURL handle — initialised once, reused for every request.
+static CURL* s_curl = nullptr;
+
+// POST a JSON payload to <apiBaseUrl()>/tasks.
+// Returns true on success (HTTP 2xx).  Silent on failure so the TUI is never
+// disrupted by network issues.
+static bool httpPostTask(const Task& t) {
+    if (!s_curl) return false;
+
+    const char* baseUrl = apiBaseUrl();
+    const size_t baseLen = strlen(baseUrl);
+    // "/tasks" is 6 chars; leave a byte for the null terminator.
+    if (baseLen > 249) return false;   // URL would be too long — skip silently
+
+    const char* pri =
+        (t.priority == Priority::HIGH)   ? "HIGH"   :
+        (t.priority == Priority::MEDIUM) ? "MEDIUM" : "LOW";
+
+    const char* status =
+        (t.status == TaskStatus::IN_PROGRESS) ? "IN_PROGRESS" :
+        (t.status == TaskStatus::DONE)         ? "DONE"        : "PENDING";
+
+    char url[256];
+    snprintf(url, sizeof(url), "%s/tasks", baseUrl);
+
+    std::string body =
+        "{\"id\":"      + std::to_string(t.id)        +
+        ",\"name\":\""  + jsonEscape(t.name)           + "\"" +
+        ",\"priority\":\"" + pri                       + "\"" +
+        ",\"status\":\"" + status                      + "\"" +
+        ",\"created\":\"" + jsonEscape(t.created)      + "\"}";
+
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_reset(s_curl);
+    curl_easy_setopt(s_curl, CURLOPT_URL, url);
+    curl_easy_setopt(s_curl, CURLOPT_POSTFIELDS, body.c_str());
+    curl_easy_setopt(s_curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(s_curl, CURLOPT_WRITEFUNCTION, curlDiscardWrite);
+    curl_easy_setopt(s_curl, CURLOPT_CONNECTTIMEOUT, 1L);  // 1 s to connect
+    curl_easy_setopt(s_curl, CURLOPT_TIMEOUT, 2L);         // 2 s total
+
+    CURLcode res = curl_easy_perform(s_curl);
+    long httpCode = 0;
+    curl_easy_getinfo(s_curl, CURLINFO_RESPONSE_CODE, &httpCode);
+
+    curl_slist_free_all(headers);
+
+    return (res == CURLE_OK && httpCode >= 200 && httpCode < 300);
+}
 
 // ─── Formatting Helpers ───────────────────────────────────────────────────────
 static std::string currentTime() {
@@ -431,6 +524,9 @@ static void drawUI(const TaskManager& tm, int sel, int scroll,
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
 int main() {
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    s_curl = curl_easy_init();   // persistent handle for the lifetime of the app
+
     setlocale(LC_ALL, "");
     initscr();
     cbreak();
@@ -540,6 +636,7 @@ int main() {
                 if (dialogAdd(name, prio)) {
                     tm.add(name, prio);
                     sel = nTasks;   // point at new last task
+                    httpPostTask(tm.tasks.back());
                     statusMsg  = "[+] Task added successfully";
                     statusTick = 0;
                 }
@@ -564,6 +661,7 @@ int main() {
             case '\n': case KEY_ENTER:
                 if (nTasks > 0) {
                     tm.cycleStatus(sel);
+                    httpPostTask(tm.tasks[sel]);
                     statusMsg  = "[*] Status updated";
                     statusTick = 0;
                 }
@@ -572,6 +670,7 @@ int main() {
             case 'p': case 'P':
                 if (nTasks > 0) {
                     tm.cyclePriority(sel);
+                    httpPostTask(tm.tasks[sel]);
                     statusMsg  = "[~] Priority changed";
                     statusTick = 0;
                 }
@@ -587,5 +686,7 @@ int main() {
     }
 
     endwin();
+    curl_easy_cleanup(s_curl);
+    curl_global_cleanup();
     return 0;
 }
