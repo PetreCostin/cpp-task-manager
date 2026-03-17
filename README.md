@@ -1,18 +1,44 @@
-# C++ Task Manager (TUI)
+# 🖥️ C++ System Dashboard (TUI)
 
-A professional terminal-based task manager built with C++ and ncurses.
+A real-time terminal dashboard built in C++ using ncurses, combining live system
+monitoring with a full-featured task manager.
 
-## Features
+## 🚀 Features
 
-- Color-coded priorities: **HIGH** (red) / **MEDIUM** (yellow) / **LOW** (green)
-- Task status lifecycle: **Pending → In Progress → Done**
-- Real-time clock in header
-- Scrollable task list with selection indicator
-- Add-task dialog with inline name entry and priority picker
-- Delete confirmation dialog
-- Stats bar (total / pending / in-progress / done)
-- Keyboard shortcut bar
-- Terminal resize support
+- 📊 **Live system stats** — CPU usage bar, memory usage bar, system uptime
+- 📝 **Task manager** — add / delete / cycle status / cycle priority
+- 🕒 **Real-time clock** — updates every 0.5 s in the header
+- 🧩 **Multi-window layout** — dedicated ncurses panels for system stats and tasks
+- ⚡ **Event-driven UI loop** — `halfdelay` keeps the display live while staying responsive to input
+
+## 🧠 Concepts Demonstrated
+
+- Low-level terminal UI (ncurses `WINDOW*` panels)
+- Reading Linux `/proc/stat`, `/proc/meminfo`, `/proc/uptime`
+- Event-driven architecture with `halfdelay`
+- State management (task lifecycle, scroll position)
+- Modular C++ design (single-file, clearly sectioned)
+- Real-time rendering with color-coded progress bars
+
+## 🖼️ Layout
+
+```
+┌─ C++ SYSTEM DASHBOARD v2.0 ──────────────── 17 Mar 2026  11:09:12 ─┐
+├─ SYSTEM STATS ──────────────────────────────────────────────────────┤
+│ CPU [████████████░░░░░░░░]  62%                                     │
+│ MEM [████████░░░░░░░░░░░░]  41%  3.3G / 8.0G                       │
+│ Uptime: 1d 02:15:42                                                 │
+├─ TASK MANAGER ──────────────────────────────────────────────────────┤
+│   ID | PRIORITY | TASK NAME            | STATUS     | CREATED       │
+│──────────────────────────────────────────────────────────────────── │
+│ > 1  | HIGH     | Monitor CPU & memory | PENDING    | 03/17/2026    │
+│   2  | HIGH     | Multi-window layout  | DONE       | 03/17/2026    │
+│   …                                                                 │
+├─────────────────────────────────────────────────────────────────────┤
+│ TASKS: 5   Pending: 3   In Progress: 1   Done: 1                    │
+│ [a] Add  [d] Delete  [Enter] Toggle Status  [p] Priority  [q] Quit  │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ## Controls
 
@@ -52,10 +78,10 @@ cmake ..
 make
 ```
 
-## Run
+## ▶️ Run
 
 ```bash
-./build/task-manager
+./build/cpp-system-dashboard
 ```
 
-> Minimum terminal size: **55 columns x 8 rows**
+> Minimum terminal size: **60 columns × 14 rows**
