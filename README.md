@@ -44,7 +44,7 @@ brew install ncurses
 
 ## Build
 
-Requires **CMake >= 3.16** and a **C++17** compiler.
+Requires **CMake >= 3.10** and a **C++17** compiler.
 
 ```bash
 mkdir build && cd build
@@ -55,7 +55,7 @@ make
 ## Run
 
 ```bash
-./build/task-manager
+./build/cpp-system-dashboard
 ```
 
 > Minimum terminal size: **55 columns x 8 rows**
