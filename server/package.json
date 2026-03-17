@@ -1,0 +1,15 @@
+{
+  "name": "cpp-distributed-dashboard-server",
+  "version": "1.0.0",
+  "description": "Node.js API server for the C++ distributed dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.16.0"
+  }
+}
