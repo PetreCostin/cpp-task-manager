@@ -59,3 +59,31 @@ make
 ```
 
 > Minimum terminal size: **55 columns x 8 rows**
+
+## REST API Server
+
+A Node.js REST API server is included in the `server/` directory.
+
+### Setup
+
+```bash
+cd server
+npm install
+node server.js
+```
+
+The server starts on `http://localhost:3000` by default (override with the `PORT` environment variable).
+
+### Endpoints
+
+| Method   | Path         | Description                          |
+|----------|--------------|--------------------------------------|
+| `GET`    | `/tasks`     | List all tasks                       |
+| `POST`   | `/tasks`     | Create a task `{ name, priority? }`  |
+| `GET`    | `/tasks/:id` | Get a single task                    |
+| `PATCH`  | `/tasks/:id` | Update `name`, `priority`, `status`  |
+| `DELETE` | `/tasks/:id` | Delete a task                        |
+| `GET`    | `/stats`     | Task counts by status                |
+
+**Priority values:** `LOW` · `MEDIUM` · `HIGH`  
+**Status values:** `PENDING` · `IN_PROGRESS` · `DONE`
